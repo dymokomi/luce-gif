@@ -13,7 +13,7 @@ Pixels compare exactly, except that two fully transparent pixels are equal whate
 their colour. The corpora live in ../.donors (never in this repository):
 
   ../.donors/gif-corpus/pygif/test-suite
-  ../.donors/gif-corpus/pillow-tests/Tests/images
+  ../.donors/pillow-tests/Tests/images
   ../.donors/ladybird-pin/Tests/LibGfx/test-inputs/gif
   ../.donors/gif-corpus/giflib/pic
 
@@ -30,7 +30,7 @@ DONORS = ROOT.parent / ".donors"
 PYGIF = DONORS / "gif-corpus/pygif/test-suite"
 CORPORA = {
     "pygif": PYGIF,
-    "pillow": DONORS / "gif-corpus/pillow-tests/Tests/images",
+    "pillow": DONORS / "pillow-tests/Tests/images",
     "ladybird": DONORS / "ladybird-pin/Tests/LibGfx/test-inputs/gif",
     "giflib": DONORS / "gif-corpus/giflib/pic",
 }
