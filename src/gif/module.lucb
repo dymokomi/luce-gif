@@ -95,12 +95,14 @@ pub struct Frame:
     pub var top: usize
     pub var width: usize
     pub var height: usize
+    ## Its rows are stored in the four interlace passes.
     pub var interlaced: bool
     ## The delay as written, in hundredths of a second.
     pub var delay: u32
     ## How long browsers show the frame, in milliseconds: the delay, or 100 where the
     ## delay is 10 ms or less (as Chrome and Firefox do).
     pub var duration: u32
+    ## What becomes of its area before the next frame is drawn.
     pub var disposal: Disposal = Disposal.keep
     ## The palette index drawn as transparent, if any.
     pub var transparent: u8?
