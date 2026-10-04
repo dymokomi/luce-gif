@@ -1,0 +1,170 @@
+#==============================================================================================
+#
+#   tests/gif/animation - Frames, delays, disposal, loops and the canvas
+#
+#==============================================================================================
+
+## Render every frame of `data` (a 2x1 canvas) and answer frame `index`'s two pixels.
+func frame_pixels(data: const u8[], index: usize) -> (u32, u32)!:
+    var animation = try Animation.open(data)
+    defer animation.release()
+    var out: u8[8]
+    try animation.render(index, out)
+    return (pixel(out, 2, 0, 0), pixel(out, 2, 1, 0))
+
+## Two frames on a 2x1 canvas: red on the left with `disposal`, then green on the right.
+func two_frames(builder: Builder*, disposal: u8):
+    builder.header(2, 1, four_colors)
+    builder.control(10, disposal = disposal)
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.control(10)
+    builder.image(1, 0, 1, 1, b"\x02")
+    builder.trailer()
+
+test "an animation lists its frames with their delays":
+    var builder = Builder()
+    builder.header(2, 1, four_colors)
+    builder.loops(0)
+    let delays: usize[4] = [0, 1, 2, 50]
+    for delay in delays:
+        builder.control(delay)
+        builder.image(0, 0, 2, 1, b"\x01\x02")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.frame_count == 4 and found.animated())
+    var animation = try Animation.open(builder.data())
+    defer animation.release()
+    let frames = animation.frames()
+    assert(frames.length == 4)
+    assert(frames[0].delay == 0 and frames[0].duration == 100)
+    assert(frames[1].delay == 1 and frames[1].duration == 100)
+    assert(frames[2].delay == 2 and frames[2].duration == 20)
+    assert(frames[3].delay == 50 and frames[3].duration == 500)
+
+test "a frame disposed as keep stays under the next":
+    var builder = Builder()
+    two_frames(&builder, 1)
+    let (left, right) = try frame_pixels(builder.data(), 1)
+    assert(left == red and right == green)
+
+test "unspecified and undefined disposals keep the frame":
+    let disposals: u8[4] = [0, 5, 6, 7]
+    for disposal in disposals:
+        var builder = Builder()
+        two_frames(&builder, disposal)
+        let (left, right) = try frame_pixels(builder.data(), 1)
+        assert(left == red and right == green)
+
+test "a frame disposed to the background is cleared to transparent":
+    var builder = Builder()
+    two_frames(&builder, 2)
+    let (left, right) = try frame_pixels(builder.data(), 1)
+    assert(left == clear_pixel and right == green)
+    let (first, unset) = try frame_pixels(builder.data(), 0)
+    assert(first == red and unset == clear_pixel)
+
+test "a frame disposed as previous is restored, for disposal 3 and 4":
+    let disposals: u8[2] = [3, 4]
+    for disposal in disposals:
+        var builder = Builder()
+        builder.header(2, 1, four_colors)
+        builder.image(0, 0, 2, 1, b"\x03\x03")
+        builder.control(10, disposal = disposal)
+        builder.image(0, 0, 1, 1, b"\x01")
+        builder.image(1, 0, 1, 1, b"\x02")
+        builder.trailer()
+        var animation = try Animation.open(builder.data())
+        defer animation.release()
+        assert(animation.frames()[1].disposal == Disposal.previous)
+        var out: u8[8]
+        try animation.render(1, out)
+        assert(pixel(out, 2, 0, 0) == red and pixel(out, 2, 1, 0) == blue)
+        try animation.render(2, out)
+        assert(pixel(out, 2, 0, 0) == blue and pixel(out, 2, 1, 0) == green)
+
+test "a first frame disposed as previous restores the empty canvas":
+    var builder = Builder()
+    two_frames(&builder, 3)
+    let (left, right) = try frame_pixels(builder.data(), 1)
+    assert(left == clear_pixel and right == green)
+
+test "transparent pixels show the frames beneath":
+    var builder = Builder()
+    builder.header(2, 1, four_colors)
+    builder.image(0, 0, 2, 1, b"\x01\x01")
+    builder.control(10, transparent = 0)
+    builder.image(0, 0, 2, 1, b"\x00\x03")
+    builder.trailer()
+    let (left, right) = try frame_pixels(builder.data(), 1)
+    assert(left == red and right == blue)
+
+test "frames render in any order":
+    var builder = Builder()
+    builder.header(2, 1, four_colors)
+    builder.control(10, disposal = 2)
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.image(1, 0, 1, 1, b"\x02")
+    builder.image(0, 0, 1, 1, b"\x03")
+    builder.trailer()
+    var animation = try Animation.open(builder.data())
+    defer animation.release()
+    var out: u8[8]
+    try animation.render(2, out)
+    assert(pixel(out, 2, 0, 0) == blue and pixel(out, 2, 1, 0) == green)
+    try animation.render(2, out)
+    assert(pixel(out, 2, 0, 0) == blue and pixel(out, 2, 1, 0) == green)
+    try animation.render(0, out)
+    assert(pixel(out, 2, 0, 0) == red and pixel(out, 2, 1, 0) == clear_pixel)
+    try animation.render(1, out)
+    assert(pixel(out, 2, 0, 0) == clear_pixel and pixel(out, 2, 1, 0) == green)
+    var failed = false
+    animation.render(3, out) catch failure:
+        failed = failure.code == invalid
+    assert(failed)
+
+test "the loop count comes from NETSCAPE2.0 or ANIMEXTS1.0, the first one found":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.loops(3)
+    builder.loops(7)
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.loop_count == 3 and found.plays() == 4)
+    var forever = Builder()
+    forever.header(1, 1, four_colors)
+    forever.loops(0, name = "ANIMEXTS1.0")
+    forever.image(0, 0, 1, 1, b"\x01")
+    forever.trailer()
+    let looping = try info(forever.data())
+    assert(looping.loop_count == 0 and looping.plays() == 0)
+
+test "the first frame widens a screen too small for it; later frames are clipped":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.image(1, 0, 1, 2, b"\x01\x02")
+    builder.image(0, 1, 4, 4, b"\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03\x03")
+    builder.trailer()
+    var animation = try Animation.open(builder.data())
+    defer animation.release()
+    assert(animation.info.width == 2 and animation.info.height == 2)
+    var out: u8[16]
+    try animation.render(0, out)
+    assert(pixel(out, 2, 0, 0) == clear_pixel and pixel(out, 2, 1, 0) == red and pixel(out, 2, 1, 1) == green)
+    try animation.render(1, out)
+    assert(pixel(out, 2, 1, 0) == red and pixel(out, 2, 0, 1) == blue and pixel(out, 2, 1, 1) == blue)
+
+test "a frame wholly outside the canvas draws nothing and still counts":
+    var builder = Builder()
+    builder.header(2, 1, four_colors)
+    builder.image(0, 0, 2, 1, b"\x01\x02")
+    builder.control(10, disposal = 2)
+    builder.image(40, 40, 2, 2, b"\x03\x03\x03\x03")
+    builder.image(1, 0, 1, 1, b"\x03")
+    builder.trailer()
+    var animation = try Animation.open(builder.data())
+    defer animation.release()
+    assert(animation.info.frame_count == 3)
+    var out: u8[8]
+    try animation.render(2, out)
+    assert(pixel(out, 2, 0, 0) == red and pixel(out, 2, 1, 0) == blue)

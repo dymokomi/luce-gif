@@ -1,0 +1,151 @@
+#==============================================================================================
+#
+#   gif - GIF decoding: still pictures and animations
+#
+#   DESCRIPTION:
+#       Reads GIF87a and GIF89a: global and local palettes, LZW image data, interlacing,
+#       the Graphics Control Extension (delay, disposal, transparency) and the
+#       NETSCAPE2.0 / ANIMEXTS1.0 loop count; comments, plain text and other application
+#       extensions are skipped. `info` reads the size, frame count and loop count;
+#       `decode_rgba8` gives the first frame as 8-bit straight RGBA; an `Animation`
+#       gives every frame as a whole canvas with the frames before it composited under
+#       it, disposal and transparency applied, as a browser shows it.
+#
+#       Damaged files are handled as browsers handle them: a file that ends early keeps
+#       the frames it holds (the last one drawn as far as its data goes), an invalid LZW
+#       code ends its frame's pixels, bytes that are not a block end the file, the first
+#       frame widens a logical screen too small for it, and frames outside the screen
+#       are clipped. Decoding is bounded: no input makes it trap, loop without end or
+#       allocate past `Options.max_pixels`.
+#
+#       Fragments, in ORDER:
+#
+#       module.lucb     the public API: errors, Info, Frame, Options, info, decode_rgba8
+#       walk.lucb       the block walker: header, screen, extensions, image descriptors
+#       lzw.lucb        the LZW decoder, bounded against bad codes
+#       paint.lucb      drawing a frame's pixels onto a canvas, interlaced or not
+#       animation.lucb  Animation: frames composited one after another
+#
+#==============================================================================================
+
+import memory
+
+# mark: Errors ================================================================================
+
+## The bytes are not a GIF, or are damaged before the first image.
+pub let corrupt: ErrorCode = ErrorCode.package(1)
+
+## A limit in `Options` was reached: the canvas has more pixels than `max_pixels`.
+pub let limit: ErrorCode = ErrorCode.package(2)
+
+## The caller's request cannot be met: an output buffer too small, a frame index past
+## the last frame.
+pub let invalid: ErrorCode = ErrorCode.package(3)
+
+# mark: Information ===========================================================================
+
+## A GIF's canvas, frames and looping.
+pub struct Info:
+    ## The canvas: the logical screen, widened to hold the first frame where the file
+    ## declares a screen too small for it (as Chrome does).
+    pub var width: usize
+    pub var height: usize
+    ## The frames: the image descriptors whose header (and local palette) the file holds
+    ## in full.
+    pub var frame_count: usize
+    ## How many times the animation repeats after its first play, as the NETSCAPE2.0
+    ## (or ANIMEXTS1.0) extension says; 0 repeats forever, and none means the file has no
+    ## such extension.
+    pub var loop_count: u32?
+    ## 87 or 89, from the signature.
+    pub var version: u32 = 89
+    ## Whether any frame has a transparent colour, or leaves part of the canvas
+    ## undrawn.
+    pub var alpha: bool
+
+    ## How many times a browser plays the animation in all: 0 forever, 1 without a loop
+    ## extension, else the written count and the first play.
+    pub func plays() -> u32:
+        if let count = self.loop_count:
+            if count == 0:
+                return 0
+            return count + 1
+        return 1
+
+    ## Whether the GIF is an animation: more than one frame.
+    pub func animated() -> bool:
+        return self.frame_count > 1
+
+## What becomes of a frame's area before the next frame is drawn.
+pub enum Disposal:
+    ## It stays (disposal 0, "unspecified", 1, and the undefined 5 to 7).
+    keep
+    ## It is cleared to transparent (2: browsers clear rather than paint the background
+    ## colour).
+    background
+    ## It is restored to what was there before the frame was drawn (3, and 4, which
+    ## some encoders write for it).
+    previous
+
+## One frame: where it is drawn, for how long, and what happens to it after.
+pub struct Frame:
+    ## The image's rectangle as the file gives it; the part outside the canvas is not
+    ## drawn.
+    pub var left: usize
+    pub var top: usize
+    pub var width: usize
+    pub var height: usize
+    pub var interlaced: bool
+    ## The delay as written, in hundredths of a second.
+    pub var delay: u32
+    ## How long browsers show the frame, in milliseconds: the delay, or 100 where the
+    ## delay is 10 ms or less (as Chrome and Firefox do).
+    pub var duration: u32
+    pub var disposal: Disposal = Disposal.keep
+    ## The palette index drawn as transparent, if any.
+    pub var transparent: u8?
+    ## Where the frame's LZW minimum code size byte is in the file; 0 when the file
+    ## ends before it.
+    var data: usize
+    ## Where its palette is (the local one, or the global), and how many colours.
+    var palette: usize
+    var colors: usize
+
+## How a decode runs.
+pub struct Options:
+    ## The most pixels a canvas may have. An `Animation` holds one canvas, and for
+    ## frames disposed "previous" a second.
+    pub var max_pixels: usize = 268435456
+
+# mark: Decoding ==============================================================================
+
+## The canvas size, frame count and loop count of the GIF in `data`.
+pub func info(data: const u8[]) -> Info!:
+    var walker = try Walker.start(data)
+    while let frame = walker.next():
+        discard(frame)
+    return walker.info
+
+## Decode the first frame into `out`, `width * height * 4` bytes of straight RGBA; what
+## the frame does not cover is transparent. Fails when the GIF has no frame.
+pub func decode_rgba8(data: const u8[], out: u8[], options: Options = Options()) -> !:
+    var walker = try Walker.start(data)
+    let first = walker.next() else error(corrupt, "GIF has no image")
+    while let frame = walker.next():
+        discard(frame)
+    let width = walker.info.width
+    let height = walker.info.height
+    try check_canvas(width, height, options)
+    if out.length < width * height * 4:
+        error(invalid, "GIF output buffer is smaller than the picture")
+    memory.set(out[..<width * height * 4], 0)
+    draw(data, &first, out, width, height)
+
+## Fail when a `width` by `height` canvas is over the limit.
+func check_canvas(width: usize, height: usize, options: Options) -> !:
+    if width != 0 and height > options.max_pixels // width:
+        error(limit, "GIF canvas has more pixels than allowed")
+
+## The lesser of `a` and `b`.
+func least(a: usize, b: usize) -> usize:
+    return a if a < b else b

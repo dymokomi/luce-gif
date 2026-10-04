@@ -1,0 +1,119 @@
+#==============================================================================================
+#
+#   tests/gif/lzw - The LZW decoder: string codes, code sizes, a full table, bad codes
+#
+#==============================================================================================
+
+## A 16x12 picture Pillow encoded (string codes and all): index ((x / 3) + (y / 2)) % 4 on
+## the four-colour palette.
+let pillow_gif = b"\x47\x49\x46\x38\x37\x61\x10\x00\x0C\x00\x81\x00\x00\x00\x00\x00\xFF\x00\x00\x00\xFF\x00\x00\x00\xFF\x2C\x00\x00\x00\x00\x10\x00\x0C\x00\x00\x08\x48\x00\x01\x08\x0C\x40\x50\x80\xC1\x01\x08\x05\x02\x08\xA0\x90\x60\x00\x83\x02\x10\x0E\x68\xE8\x10\xA2\x44\x8A\x0F\x2B\x1E\x4C\x38\xB0\xA0\x45\x8E\x0B\x3D\x46\xFC\x38\xB1\xE3\xC3\x8D\x20\x35\x46\x4C\x78\xD1\x24\x49\x85\x21\x4F\xAE\x2C\xB9\x10\xE3\x4B\x93\x32\x5B\xC6\x14\xA0\x52\x67\xC5\x80\x00\x3B"
+
+## The colours of the four-colour palette, as pixels.
+let four_pixels: u32[4] = [black, red, green, blue]
+
+test "string codes decode as Pillow encoded them":
+    var out: u8[768]
+    try decode_rgba8(pillow_gif, out)
+    for y: usize in 0..<12:
+        for x: usize in 0..<16:
+            assert(pixel(out, 16, x, y) == four_pixels[((x // 3) + (y // 2)) % 4])
+
+## Indices 0..count-1 repeating over `length` pixels.
+func pattern(indices: u8[], count: usize):
+    for index: usize in 0..<indices.length:
+        indices[index] = (u8)(index * 7 % count)
+
+test "every minimum code size from 1 to 11 decodes":
+    var palette: u8[768]
+    for index: usize in 0..<256:
+        palette[index * 3] = (u8)index
+    for minimum: usize in 1..=11:
+        let colors: usize = 2 if minimum == 1 else 256
+        var builder = Builder()
+        builder.header(10, 10, palette[..<colors * 3])
+        var indices: u8[100]
+        pattern(indices, 2 if minimum == 1 else ((usize)1 << minimum if minimum < 8 else 256))
+        builder.image(0, 0, 10, 10, indices, minimum = minimum)
+        builder.trailer()
+        var out: u8[400]
+        try decode_rgba8(builder.data(), out)
+        for at: usize in 0..<100:
+            assert(out[at * 4] == indices[at] and out[at * 4 + 3] == 255)
+
+test "a full table goes on at 12 bits until a clear code (deferred clear)":
+    var builder = Builder()
+    builder.header(80, 80, four_colors)
+    var indices: u8[6400]
+    pattern(indices, 4)
+    builder.image(0, 0, 80, 80, indices, clears = false)
+    builder.trailer()
+    var out: u8[25600]
+    try decode_rgba8(builder.data(), out)
+    for at: usize in 0..<6400:
+        assert(pixel(out, 80, at % 80, at // 80) == four_pixels[indices[at]])
+
+## A `width` x 1 image on the four-colour palette whose LZW data (minimum code size 2, so
+## 3-bit codes to begin with) is `codes`.
+func coded(builder: Builder*, codes: const u8[], width: u8 = 4):
+    builder.header((usize)width, 1, four_colors)
+    builder.add_all(b"\x2C\x00\x00\x00\x00")
+    builder.add(width)
+    builder.add_all(b"\x00\x01\x00\x00\x02")
+    builder.add((u8)codes.length)
+    builder.add_all(codes)
+    builder.add_all(b"\x00\x3B")
+
+test "a code the table does not hold ends the frame's pixels":
+    # clear (4), 1, then 7 while the next free code is 6: the first pixel stays.
+    var builder = Builder()
+    coded(&builder, b"\xCC\x01")
+    var out: u8[16]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 4, 0, 0) == red)
+    for x: usize in 1..<4:
+        assert(pixel(out, 4, x, 0) == clear_pixel)
+
+test "a code before any literal ends the frame's pixels":
+    # clear (4), then 6.
+    var builder = Builder()
+    coded(&builder, b"\x34")
+    var out: u8[16]
+    try decode_rgba8(builder.data(), out)
+    for x: usize in 0..<4:
+        assert(pixel(out, 4, x, 0) == clear_pixel)
+
+test "the first string code may be the one being defined (KwKwK)":
+    # clear, 1, then 6 = "1 1": three red pixels, then end (5).
+    var builder = Builder()
+    coded(&builder, b"\x8C\x0B")
+    var out: u8[16]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 4, 0, 0) == red and pixel(out, 4, 1, 0) == red and pixel(out, 4, 2, 0) == red)
+    assert(pixel(out, 4, 3, 0) == clear_pixel)
+
+test "a minimum code size of 0 or 12 draws nothing":
+    let sizes: u8[2] = [0, 12]
+    for minimum in sizes:
+        var builder = Builder()
+        builder.header(1, 1, four_colors)
+        builder.add_all(b"\x2C\x00\x00\x00\x00\x01\x00\x01\x00\x00")
+        builder.add(minimum)
+        builder.add_all(b"\x02\xFF\xFF\x00\x3B")
+        var out: u8[4]
+        try decode_rgba8(builder.data(), out)
+        assert(pixel(out, 1, 0, 0) == clear_pixel)
+
+test "data past the end code and pixels past the frame are ignored":
+    var builder = Builder()
+    builder.header(2, 1, four_colors)
+    builder.image(0, 0, 2, 1, b"\x01\x02")
+    builder.used -= 1
+    builder.add_all(b"\x03HID\x00\x3B")
+    var out: u8[8]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 2, 0, 0) == red and pixel(out, 2, 1, 0) == green)
+    # clear, 1, 2, 3, end: the third index is past the 2x1 frame.
+    var longer = Builder()
+    coded(&longer, b"\x8C\x56", width = 2)
+    try decode_rgba8(longer.data(), out)
+    assert(pixel(out, 2, 0, 0) == red and pixel(out, 2, 1, 0) == green)

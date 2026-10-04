@@ -1,0 +1,136 @@
+#==============================================================================================
+#
+#   gif/animation - Frames composited one after another
+#
+#   DESCRIPTION:
+#       An `Animation` holds a GIF's frame list and one canvas the size of the logical
+#       screen, transparent to begin with. Rendering frame N disposes of frame N - 1 as
+#       its Graphics Control Extension says (keeps it, clears its area to transparent, or
+#       restores the area to what it was before the frame was drawn), then draws frame N
+#       over what remains, its transparent index leaving the canvas showing through. The
+#       caller receives a copy of the whole canvas: a complete picture for each frame, as
+#       a browser displays it. Frames render fastest in order; going back starts again
+#       from the first.
+#
+#==============================================================================================
+
+# mark: The animation =========================================================================
+
+## A GIF's frames, rendered as whole composited canvases. `data` must stay valid while the
+## animation is in use; `release` frees what it holds.
+pub struct Animation:
+    ## The canvas size, frame count and loop count.
+    pub var info: Info
+    var data: const u8[]
+    var frame_list: Frame[]
+    ## The canvas, `info.width * info.height` RGBA pixels, as the last frame rendered
+    ## left it.
+    var canvas: u8[]
+    ## What was under the last frame drawn, when it is disposed "previous".
+    var saved: u8[]
+    ## The frame the next `render` draws first.
+    var next: usize
+
+    ## An animation of the GIF in `data`: its blocks walked and its canvas allocated.
+    ## Fails when the GIF has no frame or its canvas is over `options.max_pixels`.
+    pub static func open(data: const u8[], options: Options = Options()) -> Animation!:
+        var walker = try Walker.start(data)
+        var count: usize = 0
+        while let frame = walker.next():
+            discard(frame)
+            count += 1
+        if count == 0:
+            error(corrupt, "GIF has no image")
+        let found = walker.info
+        try check_canvas(found.width, found.height, options)
+        let frames = try alloc Frame[count] in memory.heap
+        errdefer free(frames) in memory.heap
+        var again = try Walker.start(data)
+        for index in 0..<count:
+            frames[index] = again.next() else trap("the GIF's frames changed between walks")
+        let canvas = try new u8[found.width * found.height * 4] in memory.heap
+        return Animation(info = found, data = data, frame_list = frames, canvas = canvas)
+
+    ## The frames, in order.
+    pub func frames() -> const Frame[]:
+        return self.frame_list
+
+    ## Render frame `index` into `out`, `info.width * info.height * 4` bytes of straight
+    ## RGBA: the canvas with every frame up to it composited. Fails for an index past the
+    ## last frame or an `out` too small.
+    pub mutating func render(index: usize, out: u8[]) -> !:
+        if index >= self.frame_list.length:
+            error(invalid, "GIF frame index is past the last frame")
+        let size = self.canvas.length
+        if out.length < size:
+            error(invalid, "GIF output buffer is smaller than the picture")
+        if index + 1 < self.next:
+            memory.set(self.canvas, 0)
+            self.next = 0
+        while self.next <= index:
+            if self.next > 0:
+                self.dispose(self.frame_list[self.next - 1])
+            let frame = self.frame_list[self.next]
+            if frame.disposal == Disposal.previous:
+                try self.save(frame)
+            draw(self.data, &frame, self.canvas, self.info.width, self.info.height)
+            self.next += 1
+        memory.copy(out, self.canvas, size)
+
+    ## Free the frame list and the canvases.
+    pub mutating func release():
+        if self.frame_list.length > 0:
+            free(self.frame_list) in memory.heap
+        if self.canvas.length > 0:
+            free(self.canvas) in memory.heap
+        if self.saved.length > 0:
+            free(self.saved) in memory.heap
+        var no_frames: Frame[]
+        var no_bytes: u8[]
+        self.frame_list = no_frames
+        self.canvas = no_bytes
+        self.saved = no_bytes
+
+    # mark: Disposal ==========================================================================
+
+    ## Dispose of `frame`, the last one drawn, before the next is drawn over it.
+    mutating func dispose(frame: Frame):
+        match frame.disposal:
+            .keep:
+                return
+            .background:
+                let area = self.area(frame)
+                for y in area.top..<area.bottom:
+                    let row = (y * self.info.width + area.left) * 4
+                    memory.set(self.canvas[row..<row + (area.right - area.left) * 4], 0)
+            .previous:
+                let area = self.area(frame)
+                let span = (area.right - area.left) * 4
+                for y in area.top..<area.bottom:
+                    let row = (y * self.info.width + area.left) * 4
+                    let start = (y - area.top) * span
+                    memory.copy(self.canvas[row..], self.saved[start..], span)
+
+    ## Keep what is under `frame` before it is drawn, for its "previous" disposal.
+    mutating func save(frame: Frame) -> !:
+        if self.saved.length == 0:
+            self.saved = try alloc u8[self.canvas.length] in memory.heap
+        let area = self.area(frame)
+        let span = (area.right - area.left) * 4
+        for y in area.top..<area.bottom:
+            let row = (y * self.info.width + area.left) * 4
+            memory.copy(self.saved[(y - area.top) * span..], self.canvas[row..], span)
+
+    ## The part of `frame`'s rectangle on the canvas.
+    func area(frame: Frame) -> Area:
+        let width = self.info.width
+        let height = self.info.height
+        return Area(left = least(frame.left, width), top = least(frame.top, height), right = least(frame.left + frame.width, width),
+                    bottom = least(frame.top + frame.height, height))
+
+## A rectangle of the canvas, its right and bottom edges excluded.
+struct Area:
+    var left: usize
+    var top: usize
+    var right: usize
+    var bottom: usize

@@ -1,0 +1,102 @@
+#==============================================================================================
+#
+#   gif/paint - Drawing a frame's pixels onto a canvas
+#
+#   DESCRIPTION:
+#       A `Painter` takes the palette indices the LZW decoder gives, in the order the
+#       file stores them, and draws them where they belong: left to right, then row by
+#       row, or in the four passes of an interlaced image (every 8th row from 0, every
+#       8th from 4, every 4th from 2, every 2nd from 1). Pixels outside the canvas are
+#       counted and skipped a run at a time, so a frame far larger than its canvas costs
+#       no more than its data. A transparent index leaves the canvas as it is; an index
+#       past the palette is opaque black, as in browsers.
+#
+#==============================================================================================
+
+# mark: The painter ===========================================================================
+
+## The first row and the row step of each interlace pass.
+let pass_starts: usize[4] = [0, 4, 2, 1]
+let pass_steps: usize[4] = [8, 8, 4, 2]
+
+## Draws one frame's indices onto an RGBA canvas.
+struct Painter:
+    var canvas: u8[]
+    var canvas_width: usize
+    var canvas_height: usize
+    var frame: Frame
+    ## The palette, three bytes a colour.
+    var colors: const u8[]
+    ## The index drawn transparent, or 256 for none.
+    var transparent: usize = 256
+    ## The next pixel's column and row in the frame, and the interlace pass.
+    var x: usize
+    var row: usize
+    var pass: usize
+    ## Every pixel of the frame has been drawn.
+    var done: bool
+
+    ## A painter of `frame` onto `canvas`, `width` by `height` pixels, with the palette
+    ## the frame uses in `data`.
+    static func over(data: const u8[], frame: const Frame*, canvas: u8[], width: usize, height: usize) -> Painter:
+        var painter = Painter(canvas = canvas, canvas_width = width, canvas_height = height, frame = *frame)
+        painter.colors = data[frame.palette..<frame.palette + frame.colors * 3]
+        if let index = frame.transparent:
+            painter.transparent = (usize)index
+        painter.done = frame.width == 0 or frame.height == 0
+        return painter
+
+    ## Draw `run`, the next indices in file order.
+    mutating func emit(run: const u8[]):
+        var index: usize = 0
+        while index < run.length and not self.done:
+            let take = least(run.length - index, self.frame.width - self.x)
+            let y = self.frame.top + self.row
+            let column = self.frame.left + self.x
+            if y < self.canvas_height and column < self.canvas_width:
+                let visible = least(take, self.canvas_width - column)
+                self.put(run[index..<index + visible], (y * self.canvas_width + column) * 4)
+            self.x += take
+            index += take
+            if self.x == self.frame.width:
+                self.x = 0
+                self.advance()
+
+    ## Write `indices` as RGBA from byte `at` of the canvas on.
+    mutating func put(indices: const u8[], at: usize):
+        var offset = at
+        let count = self.colors.length // 3
+        for value in indices:
+            let index = (usize)value
+            if index != self.transparent:
+                if index < count:
+                    self.canvas[offset] = self.colors[index * 3]
+                    self.canvas[offset + 1] = self.colors[index * 3 + 1]
+                    self.canvas[offset + 2] = self.colors[index * 3 + 2]
+                else:
+                    self.canvas[offset] = 0
+                    self.canvas[offset + 1] = 0
+                    self.canvas[offset + 2] = 0
+                self.canvas[offset + 3] = 255
+            offset += 4
+
+    ## Move to the next row in file order; past the last, the frame is done.
+    mutating func advance():
+        if not self.frame.interlaced:
+            self.row += 1
+            self.done = self.row >= self.frame.height
+            return
+        self.row += pass_steps[self.pass]
+        while self.row >= self.frame.height:
+            if self.pass == 3:
+                self.done = true
+                return
+            self.pass += 1
+            self.row = pass_starts[self.pass]
+
+## Draw `frame` of the GIF in `data` onto `canvas`, `width` by `height` RGBA pixels.
+func draw(data: const u8[], frame: const Frame*, canvas: u8[], width: usize, height: usize):
+    if frame.data == 0:
+        return
+    var painter = Painter.over(data, frame, canvas, width, height)
+    decode_lzw(data, frame.data, &painter)

@@ -1,0 +1,170 @@
+#==============================================================================================
+#
+#   tests/gif/builder - Writing small GIFs for the tests
+#
+#   DESCRIPTION:
+#       A `Builder` writes a GIF block by block into a fixed buffer: the header and
+#       screen, Graphics Control and loop extensions, comments, images and the trailer.
+#       Images are LZW-encoded with literal codes only, which every decoder must read:
+#       with `clears` a clear code keeps the codes at the minimum width, without them
+#       the table fills to 4096 strings and the rest is read at 12 bits ("deferred
+#       clear"). Pixels are given in display order and written interlaced when asked.
+#
+#==============================================================================================
+
+# mark: The builder ===========================================================================
+
+## A GIF written into a fixed buffer.
+struct Builder:
+    var bytes: u8[65536]
+    var used: usize
+    ## The LZW bit writer: pending bits, and the encoded bytes before they are split into
+    ## sub-blocks.
+    var bits: u64
+    var held: usize
+    var codes: u8[32768]
+    var coded: usize
+
+    ## The GIF so far.
+    func data() -> const u8[]:
+        return self.bytes[..<self.used]
+
+    mutating func add(byte: u8):
+        self.bytes[self.used] = byte
+        self.used += 1
+
+    mutating func add_all(data: const u8[]):
+        for byte in data:
+            self.add(byte)
+
+    mutating func word(value: usize):
+        self.add((u8)(value & 0xFF))
+        self.add((u8)(value >> 8))
+
+    ## The size field of a palette of `palette.length / 3` colours, a power of two.
+    static func palette_bits(palette: const u8[]) -> u8:
+        var bits: u8 = 0
+        while ((usize)2 << (usize)bits) < palette.length // 3:
+            bits += 1
+        return bits
+
+    ## The signature and logical screen, with `palette` (RGB triples) as the global one
+    ## unless it is empty.
+    mutating func header(width: usize, height: usize, palette: const u8[], version: str = "GIF89a", background: u8 = 0):
+        self.add_all(version.bytes)
+        self.word(width)
+        self.word(height)
+        self.add(0x80 | Builder.palette_bits(palette) if palette.length > 0 else 0)
+        self.add(background)
+        self.add(0)
+        self.add_all(palette)
+
+    ## A Graphics Control Extension: delay in hundredths, disposal 0..7, transparent
+    ## index or -1.
+    mutating func control(delay: usize, disposal: u8 = 0, transparent: i32 = -1):
+        self.add_all(b"\x21\xF9\x04")
+        self.add((disposal << 2) | (1 if transparent >= 0 else 0))
+        self.word(delay)
+        self.add((u8)transparent if transparent >= 0 else 0)
+        self.add(0)
+
+    ## A loop extension under `name`.
+    mutating func loops(count: usize, name: str = "NETSCAPE2.0"):
+        self.add_all(b"\x21\xFF\x0B")
+        self.add_all(name.bytes)
+        self.add_all(b"\x03\x01")
+        self.word(count)
+        self.add(0)
+
+    ## A comment extension.
+    mutating func comment(text: str):
+        self.add_all(b"\x21\xFE")
+        self.add((u8)text.length)
+        self.add_all(text.bytes)
+        self.add(0)
+
+    ## An image: `indices` in display order, its own `palette` unless empty.
+    mutating func image(left: usize, top: usize, width: usize, height: usize, indices: const u8[], palette: const u8[] = b"",
+                        interlaced: bool = false, minimum: usize = 2, clears: bool = true):
+        self.add(0x2C)
+        self.word(left)
+        self.word(top)
+        self.word(width)
+        self.word(height)
+        var packed: u8 = 0x40 if interlaced else 0
+        if palette.length > 0:
+            packed |= 0x80 | Builder.palette_bits(palette)
+        self.add(packed)
+        self.add_all(palette)
+        self.add((u8)minimum)
+        self.encode(width, height, indices, interlaced, minimum, clears)
+        var at: usize = 0
+        while at < self.coded:
+            let size = 255 if self.coded - at > 255 else self.coded - at
+            self.add((u8)size)
+            self.add_all(self.codes[at..<at + size])
+            at += size
+        self.add(0)
+
+    ## The trailer.
+    mutating func trailer():
+        self.add(0x3B)
+
+    # mark: LZW =================================================================================
+
+    ## Encode `indices` with literal codes into `codes`.
+    mutating func encode(width: usize, height: usize, indices: const u8[], interlaced: bool, minimum: usize, clears: bool):
+        self.coded = 0
+        self.bits = 0
+        self.held = 0
+        let clear = (usize)1 << minimum
+        var size = minimum + 1
+        var next = clear + 2
+        var first = true
+        self.put(clear, size)
+        for pass in 0..<(4 if interlaced else 1):
+            var row = pass_starts[pass] if interlaced else 0
+            while row < height:
+                for x in 0..<width:
+                    self.put((usize)indices[row * width + x], size)
+                    if not first and next < 4096:
+                        next += 1
+                        if next == (usize)1 << size and size < 12:
+                            size += 1
+                    first = false
+                    if clears and next + 1 >= (usize)1 << size:
+                        self.put(clear, size)
+                        size = minimum + 1
+                        next = clear + 2
+                        first = true
+                row += pass_steps[pass] if interlaced else 1
+        self.put(clear + 1, size)
+        if self.held > 0:
+            self.codes[self.coded] = (u8)(self.bits & 0xFF)
+            self.coded += 1
+
+    ## Write `code`, `size` bits wide.
+    mutating func put(code: usize, size: usize):
+        self.bits |= (u64)code << (u64)self.held
+        self.held += size
+        while self.held >= 8:
+            self.codes[self.coded] = (u8)(self.bits & 0xFF)
+            self.coded += 1
+            self.bits >>= 8
+            self.held -= 8
+
+# mark: Helpers ===============================================================================
+
+## Four colours: black, red, green, blue.
+let four_colors = b"\x00\x00\x00\xFF\x00\x00\x00\xFF\x00\x00\x00\xFF"
+
+## The RGBA pixel at `x`, `y` of a `width`-wide canvas, as one number 0xRRGGBBAA.
+func pixel(canvas: const u8[], width: usize, x: usize, y: usize) -> u32:
+    let at = (y * width + x) * 4
+    return ((u32)canvas[at] << 24) | ((u32)canvas[at + 1] << 16) | ((u32)canvas[at + 2] << 8) | (u32)canvas[at + 3]
+
+let red: u32 = 0xFF0000FF
+let green: u32 = 0x00FF00FF
+let blue: u32 = 0x0000FFFF
+let black: u32 = 0x000000FF
+let clear_pixel: u32 = 0

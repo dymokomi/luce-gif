@@ -1,0 +1,103 @@
+#==============================================================================================
+#
+#   gif/lzw - The LZW decoder
+#
+#   DESCRIPTION:
+#       GIF's variable-length LZW (GIF89a appendix F): codes of 1 + the minimum code size
+#       bits, growing to 12, least significant bit first, packed in sub-blocks of up to
+#       255 bytes. The table holds 4096 strings, each a prefix code and a last byte, so a
+#       string is unwound into a fixed stack; once it is full, codes are read at 12 bits
+#       with no new strings until a clear code ("deferred clear"). A code the table does
+#       not hold yet ends the frame's pixels there, as does the end code, the end of the
+#       sub-blocks, the end of the file, or the frame's last pixel: nothing in the data
+#       can make the decoder trap or run past what the data and the frame allow.
+#
+#==============================================================================================
+
+# mark: The decoder ===========================================================================
+
+## The most codes a table holds, and so the widest code: 12 bits.
+let table_size: usize = 4096
+
+## The LZW state of one frame.
+struct Lzw:
+    ## Each string's prefix code, last byte and first byte.
+    var prefix: u16[4096]
+    var suffix: u8[4096]
+    var first: u8[4096]
+    ## Strings are unwound here, last byte at the end.
+    var stack: u8[4097]
+
+## Decode the LZW data whose minimum code size byte is at `start` of `data`, handing the
+## indices to `painter` until the frame is drawn or the data ends.
+func decode_lzw(data: const u8[], start: usize, painter: Painter*):
+    let minimum = (usize)data[start]
+    if minimum < 1 or minimum > 11:
+        return
+    var lzw = Lzw()
+    let clear = (usize)1 << minimum
+    for code in 0..<clear:
+        lzw.suffix[code] = (u8)code
+        lzw.first[code] = (u8)code
+    var size = minimum + 1
+    var next = clear + 2
+    var previous = table_size
+    var bits: u64 = 0
+    var held: usize = 0
+    var position = start + 1
+    var block_left: usize = 0
+    while not painter.done:
+        while held < size:
+            if block_left == 0:
+                if position >= data.length or data[position] == 0:
+                    return
+                block_left = (usize)data[position]
+                position += 1
+            if position >= data.length:
+                return
+            bits |= (u64)data[position] << (u64)held
+            held += 8
+            position += 1
+            block_left -= 1
+        let code = (usize)(bits & (((u64)1 << (u64)size) - 1))
+        bits >>= (u64)size
+        held -= size
+        if code == clear:
+            size = minimum + 1
+            next = clear + 2
+            previous = table_size
+            continue
+        if code == clear + 1:
+            return
+        var top = lzw.stack.length
+        if previous == table_size:
+            if code > clear:
+                return
+            top -= 1
+            lzw.stack[top] = (u8)code
+            previous = code
+            painter.emit(lzw.stack[top..])
+            continue
+        var head = code
+        if code >= next:
+            if code > next or next == table_size:
+                return
+            # The string not yet in the table: the previous one and its own first byte.
+            top -= 1
+            lzw.stack[top] = lzw.first[previous]
+            head = previous
+        while head >= clear:
+            top -= 1
+            lzw.stack[top] = lzw.suffix[head]
+            head = (usize)lzw.prefix[head]
+        top -= 1
+        lzw.stack[top] = (u8)head
+        if next < table_size:
+            lzw.prefix[next] = (u16)previous
+            lzw.suffix[next] = lzw.stack[top]
+            lzw.first[next] = lzw.first[previous]
+            next += 1
+            if next == (usize)1 << size and size < 12:
+                size += 1
+        previous = code
+        painter.emit(lzw.stack[top..])

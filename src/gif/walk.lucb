@@ -1,0 +1,168 @@
+#==============================================================================================
+#
+#   gif/walk - The block walker: header, screen, extensions and image descriptors
+#
+#   DESCRIPTION:
+#       A `Walker` steps through a GIF's blocks and answers its frames one at a time,
+#       without decoding pixels: each image descriptor with the Graphics Control
+#       Extension before it. It reads the loop count from a NETSCAPE2.0 or ANIMEXTS1.0
+#       extension and skips every other extension's sub-blocks. Where the file ends
+#       early, or holds a byte that starts no block, the walk ends there with the frames
+#       found so far, as browsers end it.
+#
+#==============================================================================================
+
+# mark: Reading ===============================================================================
+
+## The little-endian 16-bit number at `at` of `data`.
+func word(data: const u8[], at: usize) -> usize:
+    return (usize)data[at] | ((usize)data[at + 1] << 8)
+
+## Where the sub-blocks starting at `at` end: the offset after their zero-length
+## terminator, or none when the data ends first.
+func skip_blocks(data: const u8[], at: usize) -> usize?:
+    var position = at
+    while position < data.length:
+        let size = (usize)data[position]
+        if size == 0:
+            return position + 1
+        position += size + 1
+    return none
+
+## Whether the bytes of `data` at `at` are `text`.
+func holds(data: const u8[], at: usize, text: str) -> bool:
+    if at + text.length > data.length:
+        return false
+    return (str)data[at..<at + text.length] == text
+
+# mark: The walker ============================================================================
+
+## Steps through a GIF's blocks, answering its frames in order. `info` grows as it goes:
+## after the last frame it holds the frame count, the loop count and the canvas size.
+struct Walker:
+    var data: const u8[]
+    var at: usize
+    var info: Info = Info()
+    var finished: bool
+    ## The global palette: where it is in the file, and how many colours (0 for none).
+    var global: usize
+    var global_colors: usize
+    ## The Graphics Control Extension that applies to the next image.
+    var delay: u32
+    var disposal: Disposal = Disposal.keep
+    var transparent: u8?
+
+    ## A walker over `data`, its header and logical screen read. Fails when `data` is
+    ## not a GIF, or ends inside its header or global palette.
+    static func start(data: const u8[]) -> Walker!:
+        if not holds(data, 0, "GIF87a") and not holds(data, 0, "GIF89a"):
+            error(corrupt, "not a GIF: no GIF87a or GIF89a signature")
+        if data.length < 13:
+            error(corrupt, "GIF ends inside its logical screen descriptor")
+        var walker = Walker(data = data, at = 13)
+        walker.info.version = 87 if data[4] == '7' else 89
+        walker.info.width = word(data, 6)
+        walker.info.height = word(data, 8)
+        let packed = data[10]
+        if (packed & 0x80) != 0:
+            walker.global = 13
+            walker.global_colors = (usize)2 << (usize)(packed & 7)
+            walker.at = 13 + walker.global_colors * 3
+            if walker.at > data.length:
+                error(corrupt, "GIF ends inside its global palette")
+        return walker
+
+    ## The next frame, or none after the last.
+    mutating func next() -> Frame?:
+        while not self.finished and self.at < self.data.length:
+            let introducer = self.data[self.at]
+            if introducer == 0x2C:
+                return self.image()
+            if introducer == 0x21:
+                self.extension()
+            else:
+                # The trailer, 0x3B, ends the file; so does any other byte, as browsers
+                # treat it.
+                self.finished = true
+        self.finished = true
+        return none
+
+    ## Read the extension at `at`: a Graphics Control Extension sets what applies to the
+    ## next image, a NETSCAPE2.0 or ANIMEXTS1.0 one the loop count; the rest are skipped.
+    mutating func extension():
+        let data = self.data
+        if self.at + 2 > data.length:
+            self.finished = true
+            return
+        let label = data[self.at + 1]
+        let blocks = self.at + 2
+        if label == 0xF9 and blocks + 5 <= data.length and data[blocks] >= 4:
+            let packed = data[blocks + 1]
+            self.delay = (u32)word(data, blocks + 2)
+            let method = (packed >> 2) & 7
+            self.disposal = Disposal.background if method == 2 else (Disposal.previous if method == 3 or method == 4 else Disposal.keep)
+            self.transparent = data[blocks + 4] if (packed & 1) != 0 else none
+        elif label == 0xFF and blocks < data.length and data[blocks] == 11:
+            if holds(data, blocks + 1, "NETSCAPE2.0") or holds(data, blocks + 1, "ANIMEXTS1.0"):
+                let next = blocks + 12
+                if next + 4 <= data.length and data[next] >= 3 and data[next + 1] == 1 and self.info.loop_count == none:
+                    self.info.loop_count = (u32)word(data, next + 2)
+        let after = skip_blocks(data, blocks) else 0
+        if after == 0:
+            self.finished = true
+        else:
+            self.at = after
+
+    ## Read the image descriptor at `at` and its local palette into a frame, and step
+    ## past its data. The file ending inside the descriptor or the palette ends the walk
+    ## with no frame; ending inside the data still answers the frame.
+    mutating func image() -> Frame?:
+        let data = self.data
+        let at = self.at
+        if at + 10 > data.length:
+            self.finished = true
+            return none
+        var frame = Frame(left = word(data, at + 1), top = word(data, at + 3), width = word(data, at + 5), height = word(data, at + 7))
+        let packed = data[at + 9]
+        frame.interlaced = (packed & 0x40) != 0
+        var start = at + 10
+        frame.palette = self.global
+        frame.colors = self.global_colors
+        if (packed & 0x80) != 0:
+            frame.palette = start
+            frame.colors = (usize)2 << (usize)(packed & 7)
+            start += frame.colors * 3
+            if start > data.length:
+                self.finished = true
+                return none
+        frame.delay = self.delay
+        frame.duration = 100 if self.delay <= 1 else self.delay * 10
+        frame.disposal = self.disposal
+        frame.transparent = self.transparent
+        self.delay = 0
+        self.disposal = Disposal.keep
+        self.transparent = none
+        if start < data.length:
+            frame.data = start
+            let after = skip_blocks(data, start + 1) else 0
+            if after == 0:
+                self.finished = true
+            else:
+                self.at = after
+        else:
+            self.finished = true
+        self.note(&frame)
+        return frame
+
+    ## Count `frame`, widening the canvas to the first frame and noting transparency.
+    mutating func note(frame: const Frame*):
+        if self.info.frame_count == 0:
+            if frame.left + frame.width > self.info.width:
+                self.info.width = frame.left + frame.width
+            if frame.top + frame.height > self.info.height:
+                self.info.height = frame.top + frame.height
+            if frame.left > 0 or frame.top > 0 or frame.width < self.info.width or frame.height < self.info.height:
+                self.info.alpha = true
+        if frame.transparent != none or frame.disposal == Disposal.background:
+            self.info.alpha = true
+        self.info.frame_count += 1

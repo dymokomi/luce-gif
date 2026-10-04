@@ -1,0 +1,126 @@
+#==============================================================================================
+#
+#   tests/gif/damage - Damaged and unusual files decode as browsers decode them
+#
+#==============================================================================================
+
+test "a file cut inside the image data keeps what it has":
+    var builder = Builder()
+    builder.header(8, 8, four_colors)
+    var indices: u8[64]
+    for index: usize in 0..<64:
+        indices[index] = 1
+    builder.image(0, 0, 8, 8, indices)
+    let whole = builder.used
+    let cut = whole - 12
+    let found = try info(builder.data()[..<cut])
+    assert(found.frame_count == 1)
+    var out: u8[256]
+    try decode_rgba8(builder.data()[..<cut], out)
+    assert(pixel(out, 8, 0, 0) == red)
+    assert(pixel(out, 8, 7, 7) == clear_pixel)
+
+test "a file cut inside an image descriptor drops that frame":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.image(0, 0, 1, 1, b"\x01")
+    let first = builder.used
+    builder.image(0, 0, 1, 1, b"\x02")
+    let found = try info(builder.data()[..<first + 5])
+    assert(found.frame_count == 1)
+
+test "a file that ends after a descriptor, or its code size, counts an empty frame":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.image(0, 0, 1, 1, b"\x01")
+    let cuts: usize[2] = [4, 5]
+    for cut in cuts:
+        let data = builder.data()[..<builder.used - cut]
+        let found = try info(data)
+        assert(found.frame_count == 1)
+        var out: u8[4]
+        try decode_rgba8(data, out)
+        assert(pixel(out, 1, 0, 0) == clear_pixel)
+
+test "a byte that starts no block ends the file":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.add(0x00)
+    builder.image(0, 0, 1, 1, b"\x02")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.frame_count == 1)
+
+test "a missing trailer is no matter":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.image(0, 0, 1, 1, b"\x02")
+    var out: u8[4]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 1, 0, 0) == green)
+
+test "comments, plain text and unknown extensions are skipped":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.comment("made by a test")
+    builder.add_all(b"\x21\x01\x0C\x00\x00\x00\x00\x08\x00\x08\x00\x08\x08\x01\x00\x05Hello\x00")
+    builder.add_all(b"\x21\x99\x02ab\x00")
+    builder.add_all(b"\x21\xFF\x0BXMP DataXMP\x03abc\x00")
+    builder.image(0, 0, 1, 1, b"\x03")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.frame_count == 1 and found.loop_count == none)
+    var out: u8[4]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 1, 0, 0) == blue)
+
+test "a Graphics Control Extension applies to the next image only":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.control(20, disposal = 2, transparent = 1)
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.trailer()
+    var animation = try Animation.open(builder.data())
+    defer animation.release()
+    let frames = animation.frames()
+    assert(frames[0].delay == 20 and frames[0].disposal == Disposal.background and frames[0].transparent == 1)
+    assert(frames[1].delay == 0 and frames[1].disposal == Disposal.keep and frames[1].transparent == none)
+    var out: u8[4]
+    try animation.render(1, out)
+    assert(pixel(out, 1, 0, 0) == red)
+
+test "a short Graphics Control Extension is ignored":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.add_all(b"\x21\xF9\x02\x01\x05\x00")
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.trailer()
+    var animation = try Animation.open(builder.data())
+    defer animation.release()
+    assert(animation.frames()[0].transparent == none and animation.frames()[0].delay == 0)
+
+test "frames of no width or height draw nothing":
+    var builder = Builder()
+    builder.header(2, 2, four_colors)
+    builder.image(0, 0, 0, 1, b"")
+    builder.image(0, 0, 1, 0, b"")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.frame_count == 2)
+    var out: u8[16]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 2, 0, 0) == clear_pixel)
+
+test "a huge frame with little data is quick":
+    var builder = Builder()
+    builder.header(4, 4, four_colors)
+    builder.image(0, 0, 4, 4, b"\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01")
+    # A 65535 x 65535 frame at the canvas corner: its few pixels are counted, not drawn.
+    builder.add_all(b"\x2C\x02\x00\x02\x00\xFF\xFF\xFF\xFF\x00\x08\x04\x00\x01\x02\x03\x00\x3B")
+    var animation = try Animation.open(builder.data())
+    defer animation.release()
+    var out: u8[64]
+    try animation.render(1, out)
+    assert(pixel(out, 4, 0, 0) == red)

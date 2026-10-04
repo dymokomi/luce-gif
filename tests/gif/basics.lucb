@@ -1,0 +1,164 @@
+#==============================================================================================
+#
+#   tests/gif/basics - Still pictures: header, palettes, transparency, failures
+#
+#==============================================================================================
+
+## A 2x2 still of red, green, blue and black on the four-colour global palette.
+func still(builder: Builder*):
+    builder.header(2, 2, four_colors)
+    builder.image(0, 0, 2, 2, b"\x01\x02\x03\x00")
+    builder.trailer()
+
+test "info reads the screen and the single frame":
+    var builder = Builder()
+    still(&builder)
+    let found = try info(builder.data())
+    assert(found.width == 2 and found.height == 2)
+    assert(found.frame_count == 1 and not found.animated())
+    assert(found.loop_count == none and found.plays() == 1)
+    assert(found.version == 89 and not found.alpha)
+
+test "decode_rgba8 gives the palette's colours, opaque":
+    var builder = Builder()
+    still(&builder)
+    var out: u8[16]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 2, 0, 0) == red and pixel(out, 2, 1, 0) == green)
+    assert(pixel(out, 2, 0, 1) == blue and pixel(out, 2, 1, 1) == black)
+
+test "GIF87a reads the same":
+    var builder = Builder()
+    builder.header(1, 1, four_colors, version = "GIF87a")
+    builder.image(0, 0, 1, 1, b"\x02")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.version == 87)
+    var out: u8[4]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 1, 0, 0) == green)
+
+test "a local palette replaces the global one":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.image(0, 0, 1, 1, b"\x01", palette = b"\x10\x20\x30\x40\x50\x60")
+    builder.trailer()
+    var out: u8[4]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 1, 0, 0) == 0x405060FF)
+
+test "a frame needs no global palette":
+    var builder = Builder()
+    builder.header(1, 1, b"")
+    builder.image(0, 0, 1, 1, b"\x01", palette = b"\x00\x00\x00\xFF\x00\x00")
+    builder.trailer()
+    var out: u8[4]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 1, 0, 0) == red)
+
+test "an index past the palette, or with no palette at all, is opaque black":
+    var builder = Builder()
+    builder.header(2, 1, b"\xFF\xFF\xFF\xFF\xFF\xFF")
+    builder.image(0, 0, 2, 1, b"\x01\x03")
+    builder.trailer()
+    var out: u8[8]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 2, 0, 0) == 0xFFFFFFFF and pixel(out, 2, 1, 0) == black)
+    var bare = Builder()
+    bare.header(1, 1, b"")
+    bare.image(0, 0, 1, 1, b"\x01")
+    bare.trailer()
+    try decode_rgba8(bare.data(), out)
+    assert(pixel(out, 1, 0, 0) == black)
+
+test "the transparent index leaves the canvas clear":
+    var builder = Builder()
+    builder.header(2, 1, four_colors)
+    builder.control(0, transparent = 1)
+    builder.image(0, 0, 2, 1, b"\x01\x02")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.alpha)
+    var out: u8[8]
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 2, 0, 0) == clear_pixel and pixel(out, 2, 1, 0) == green)
+
+test "what the first frame does not cover is transparent":
+    var builder = Builder()
+    builder.header(3, 2, four_colors)
+    builder.image(1, 1, 1, 1, b"\x03")
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.alpha)
+    var out: u8[24]
+    memory.set(out, 0x55)
+    try decode_rgba8(builder.data(), out)
+    assert(pixel(out, 3, 1, 1) == blue)
+    assert(pixel(out, 3, 0, 0) == clear_pixel and pixel(out, 3, 2, 1) == clear_pixel)
+
+test "interlaced rows land where they belong":
+    var builder = Builder()
+    var indices: u8[10]
+    for row: usize in 0..<10:
+        indices[row] = (u8)(row % 4)
+    builder.header(1, 10, four_colors)
+    builder.image(0, 0, 1, 10, indices, interlaced = true)
+    builder.trailer()
+    var out: u8[40]
+    try decode_rgba8(builder.data(), out)
+    let expected: u32[4] = [black, red, green, blue]
+    for row: usize in 0..<10:
+        assert(pixel(out, 1, 0, row) == expected[row % 4])
+
+test "not a GIF fails as corrupt":
+    var out: u8[4]
+    var failed = false
+    decode_rgba8(b"\x89PNG\r\n\x1a\n", out) catch failure:
+        failed = failure.code == corrupt
+    assert(failed)
+    failed = false
+    discard(info(b"GIF89a\x01\x00") catch failure:
+        failed = failure.code == corrupt
+        recover Info())
+    assert(failed)
+
+test "a global palette cut short fails":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    var failed = false
+    discard(info(builder.data()[..<20]) catch failure:
+        failed = failure.code == corrupt
+        recover Info())
+    assert(failed)
+
+test "a GIF with no image has no frame to decode":
+    var builder = Builder()
+    builder.header(1, 1, four_colors)
+    builder.trailer()
+    let found = try info(builder.data())
+    assert(found.frame_count == 0)
+    var out: u8[4]
+    var failed = false
+    decode_rgba8(builder.data(), out) catch failure:
+        failed = failure.code == corrupt
+    assert(failed)
+
+test "an output buffer too small is refused":
+    var builder = Builder()
+    still(&builder)
+    var out: u8[12]
+    var failed = false
+    decode_rgba8(builder.data(), out) catch failure:
+        failed = failure.code == invalid
+    assert(failed)
+
+test "a canvas over the limit is refused before anything is allocated":
+    var builder = Builder()
+    builder.header(65535, 65535, four_colors)
+    builder.image(0, 0, 1, 1, b"\x01")
+    builder.trailer()
+    var out: u8[4]
+    var failed = false
+    decode_rgba8(builder.data(), out, Options(max_pixels = 1000)) catch failure:
+        failed = failure.code == limit
+    assert(failed)

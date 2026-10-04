@@ -1,0 +1,11 @@
+#prisma 4.0
+def package "luce-gif" {
+    str owner = "dymokomi"
+    str version = "0.1.0"
+    str kind = "package"
+    str language = "luce-base"
+    str license = "MIT OR Apache-2.0"
+    str description = "A GIF decoder for Luce/Base: GIF87a and GIF89a, still and animated, frames composited as browsers show them."
+    str readme = "README.md"
+    str[] public = ["gif"]
+}
