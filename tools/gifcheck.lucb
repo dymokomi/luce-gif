@@ -1,0 +1,109 @@
+#==============================================================================================
+#
+#   tools/gifcheck - Decode a list of GIFs, writing every composited frame
+#
+#   DESCRIPTION:
+#       The Luce half of the conformance runner (conformance.py) and the fuzzer
+#       (fuzz.py). Usage: `gifcheck LIST OUTDIR`. Each line of LIST is `FLAGS PATH`, FLAGS
+#       a word of letters (or `-` for none): `q` decodes without writing anything (the
+#       fuzzer's runs), `s` lowers the canvas limit to 4 megapixels. For the Nth line it
+#       prints `N ok WIDTH HEIGHT FRAMES LOOP DELAYS DURATIONS DISPOSALS` (LOOP the
+#       loop count or `-`; the lists comma-separated, disposals as k, b and p) or
+#       `N error CODE MESSAGE`, and writes the frames, each a whole RGBA canvas, one
+#       after another to OUTDIR/N.rgba. It checks that `decode_rgba8` gives the first
+#       frame's canvas, byte for byte.
+#
+#==============================================================================================
+
+import io
+import memory
+import gif
+import disk
+
+extern func fflush(file: void*?) -> i32
+
+## A file of the list cannot be read.
+let missing: ErrorCode = ErrorCode.package(100)
+
+## The name of a failure's code.
+func code_name(code: ErrorCode) -> str:
+    if code == gif.corrupt:
+        return "corrupt"
+    if code == gif.limit:
+        return "limit"
+    if code == gif.invalid:
+        return "invalid"
+    if code == missing:
+        return "missing"
+    return "other"
+
+## Decode the file of one job and report it.
+func run_job(number: usize, job: disk.Job, directory: str) -> !:
+    let data = disk.read_file(job.path) else error(missing, "cannot read the file")
+    defer free(data) in memory.heap
+    var options = gif.Options()
+    if disk.has(job.flags, 's'):
+        options.max_pixels = 4194304
+    var animation = gif.Animation.open(data, options) catch failure:
+        print(f"{number} error {code_name(failure.code)} {failure.message}")
+        return
+    defer animation.release()
+    let found = animation.info
+    let size = found.width * found.height * 4
+    let canvas = try new u8[size] in memory.heap
+    defer free(canvas) in memory.heap
+    let first = try new u8[size] in memory.heap
+    defer free(first) in memory.heap
+    try gif.decode_rgba8(data, first, options)
+    var frames = disk.Buffer()
+    defer frames.release()
+    let quiet = disk.has(job.flags, 'q')
+    for index in 0..<found.frame_count:
+        try animation.render(index, canvas)
+        if index == 0 and not disk.same(canvas, first):
+            error(gif.invalid, "decode_rgba8 differs from the first rendered frame")
+        if not quiet:
+            try frames.add_all(canvas)
+    let out = io.stdout()
+    discard(try out.write(f"{number} ok {found.width} {found.height} {found.frame_count} "))
+    if let count = found.loop_count:
+        discard(try out.write(f"{count} "))
+    else:
+        discard(try out.write("- "))
+    for (index, frame) in animation.frames().indexed():
+        discard(try out.write(f"{"," if index > 0 else ""}{frame.delay}"))
+    discard(try out.write(" "))
+    for (index, frame) in animation.frames().indexed():
+        discard(try out.write(f"{"," if index > 0 else ""}{frame.duration}"))
+    discard(try out.write(" "))
+    for frame in animation.frames():
+        let letter = match frame.disposal:
+            .keep => "k"
+            .background => "b"
+            .previous => "p"
+        discard(try out.write(letter))
+    discard(try out.write("\n"))
+    if quiet:
+        return
+    var digits: u8[32]
+    let name = try format(digits, f"/{number}.rgba")
+    var target = disk.Buffer()
+    defer target.release()
+    try target.add_all(directory.bytes)
+    try target.add_all(name.bytes)
+    try disk.write_file((str)target.view(), frames.view())
+
+pub func main(arguments: str[]) -> i32!:
+    if arguments.length < 3:
+        print("usage: gifcheck LIST OUTDIR")
+        return 2
+    let list = disk.read_file(arguments[1]) else error(memory.exhausted, "cannot read the list")
+    defer free(list) in memory.heap
+    var jobs = disk.Jobs.over(list)
+    var number: usize = 0
+    while let job = jobs.next():
+        run_job(number, job, arguments[2]) catch failure:
+            print(f"{number} error {code_name(failure.code)} {failure.message}")
+        discard(fflush(none))
+        number += 1
+    return 0
