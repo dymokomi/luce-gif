@@ -54,7 +54,7 @@ struct Walker:
 
     ## A walker over `data`, its header and logical screen read. Fails when `data` is
     ## not a GIF, or ends inside its header or global palette.
-    static func start(data: const u8[]) -> Walker!:
+    func start(data: const u8[]) -> Walker!:
         if not holds(data, 0, "GIF87a") and not holds(data, 0, "GIF89a"):
             error(corrupt, "not a GIF: no GIF87a or GIF89a signature")
         if data.length < 13:
@@ -73,7 +73,7 @@ struct Walker:
         return walker
 
     ## The next frame, or none after the last.
-    mutating func next() -> Frame?:
+    func next() -> Frame?:
         while not self.finished and self.at < self.data.length:
             let introducer = self.data[self.at]
             if introducer == 0x2C:
@@ -89,7 +89,7 @@ struct Walker:
 
     ## Read the extension at `at`: a Graphics Control Extension sets what applies to the
     ## next image, a NETSCAPE2.0 or ANIMEXTS1.0 one the loop count; the rest are skipped.
-    mutating func extension():
+    func extension():
         let data = self.data
         if self.at + 2 > data.length:
             self.finished = true
@@ -116,7 +116,7 @@ struct Walker:
     ## Read the image descriptor at `at` and its local palette into a frame, and step
     ## past its data. The file ending inside the descriptor or the palette ends the walk
     ## with no frame; ending inside the data still answers the frame.
-    mutating func image() -> Frame?:
+    func image() -> Frame?:
         let data = self.data
         let at = self.at
         if at + 10 > data.length:
@@ -155,7 +155,7 @@ struct Walker:
         return frame
 
     ## Count `frame`, widening the canvas to the first frame and noting transparency.
-    mutating func note(frame: const Frame*):
+    func note(frame: const Frame*):
         if self.info.frame_count == 0:
             if frame.left + frame.width > self.info.width:
                 self.info.width = frame.left + frame.width

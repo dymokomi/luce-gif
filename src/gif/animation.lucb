@@ -33,17 +33,17 @@ pub struct Animation:
 
     ## An animation of the GIF in `data`: its blocks walked and its canvas allocated.
     ## Fails when the GIF has no frame or its canvas is over `options.max_pixels`.
-    pub static func open(data: const u8[], options: Options = Options()) -> Animation!:
+    pub func open(data: const u8[], options: Options = Options()) -> Animation!:
         var walker = try Walker.start(data)
         var count: usize = 0
         while let frame = walker.next():
-            discard(frame)
+            _ = frame
             count += 1
         if count == 0:
             error(corrupt, "GIF has no image")
         let found = walker.info
         try check_canvas(found.width, found.height, options)
-        let frames = try alloc Frame[count] in memory.heap
+        let frames = try new Frame[count] --- in memory.heap
         errdefer free(frames) in memory.heap
         var again = try Walker.start(data)
         for index in 0..<count:
@@ -58,7 +58,7 @@ pub struct Animation:
     ## Render frame `index` into `out`, `info.width * info.height * 4` bytes of straight
     ## RGBA: the canvas with every frame up to it composited. Fails for an index past the
     ## last frame or an `out` too small.
-    pub mutating func render(index: usize, out: u8[]) -> !:
+    pub func render(index: usize, out: u8[]) -> !:
         if index >= self.frame_list.length:
             error(invalid, "GIF frame index is past the last frame")
         let size = self.canvas.length
@@ -78,7 +78,7 @@ pub struct Animation:
         memory.copy(out, self.canvas, size)
 
     ## Free the frame list and the canvases.
-    pub mutating func release():
+    pub func release():
         if self.frame_list.length > 0:
             free(self.frame_list) in memory.heap
         if self.canvas.length > 0:
@@ -94,7 +94,7 @@ pub struct Animation:
     # mark: Disposal ==========================================================================
 
     ## Dispose of `frame`, the last one drawn, before the next is drawn over it.
-    mutating func dispose(frame: Frame):
+    func dispose(frame: Frame):
         match frame.disposal:
             .keep:
                 return
@@ -112,9 +112,9 @@ pub struct Animation:
                     memory.copy(self.canvas[row..], self.saved[start..], span)
 
     ## Keep what is under `frame` before it is drawn, for its "previous" disposal.
-    mutating func save(frame: Frame) -> !:
+    func save(frame: Frame) -> !:
         if self.saved.length == 0:
-            self.saved = try alloc u8[self.canvas.length] in memory.heap
+            self.saved = try new u8[self.canvas.length] --- in memory.heap
         let area = self.area(frame)
         let span = (area.right - area.left) * 4
         for y in area.top..<area.bottom:

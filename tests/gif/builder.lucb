@@ -29,20 +29,20 @@ struct Builder:
     func data() -> const u8[]:
         return self.bytes[..<self.used]
 
-    mutating func add(byte: u8):
+    func add(byte: u8):
         self.bytes[self.used] = byte
         self.used += 1
 
-    mutating func add_all(data: const u8[]):
+    func add_all(data: const u8[]):
         for byte in data:
             self.add(byte)
 
-    mutating func word(value: usize):
+    func word(value: usize):
         self.add((u8)(value & 0xFF))
         self.add((u8)(value >> 8))
 
     ## The size field of a palette of `palette.length / 3` colours, a power of two.
-    static func palette_bits(palette: const u8[]) -> u8:
+    func palette_bits(palette: const u8[]) -> u8:
         var bits: u8 = 0
         while ((usize)2 << (usize)bits) < palette.length // 3:
             bits += 1
@@ -50,7 +50,7 @@ struct Builder:
 
     ## The signature and logical screen, with `palette` (RGB triples) as the global one
     ## unless it is empty.
-    mutating func header(width: usize, height: usize, palette: const u8[], version: str = "GIF89a", background: u8 = 0):
+    func header(width: usize, height: usize, palette: const u8[], version: str = "GIF89a", background: u8 = 0):
         self.add_all(version.bytes)
         self.word(width)
         self.word(height)
@@ -61,7 +61,7 @@ struct Builder:
 
     ## A Graphics Control Extension: delay in hundredths, disposal 0..7, transparent
     ## index or -1.
-    mutating func control(delay: usize, disposal: u8 = 0, transparent: i32 = -1):
+    func control(delay: usize, disposal: u8 = 0, transparent: i32 = -1):
         self.add_all(b"\x21\xF9\x04")
         self.add((disposal << 2) | (1 if transparent >= 0 else 0))
         self.word(delay)
@@ -69,7 +69,7 @@ struct Builder:
         self.add(0)
 
     ## A loop extension under `name`.
-    mutating func loops(count: usize, name: str = "NETSCAPE2.0"):
+    func loops(count: usize, name: str = "NETSCAPE2.0"):
         self.add_all(b"\x21\xFF\x0B")
         self.add_all(name.bytes)
         self.add_all(b"\x03\x01")
@@ -77,15 +77,15 @@ struct Builder:
         self.add(0)
 
     ## A comment extension.
-    mutating func comment(text: str):
+    func comment(text: str):
         self.add_all(b"\x21\xFE")
         self.add((u8)text.length)
         self.add_all(text.bytes)
         self.add(0)
 
     ## An image: `indices` in display order, its own `palette` unless empty.
-    mutating func image(left: usize, top: usize, width: usize, height: usize, indices: const u8[], palette: const u8[] = b"",
-                        interlaced: bool = false, minimum: usize = 2, clears: bool = true):
+    func image(left: usize, top: usize, width: usize, height: usize, indices: const u8[], palette: const u8[] = b"",
+               interlaced: bool = false, minimum: usize = 2, clears: bool = true):
         self.add(0x2C)
         self.word(left)
         self.word(top)
@@ -107,13 +107,13 @@ struct Builder:
         self.add(0)
 
     ## The trailer.
-    mutating func trailer():
+    func trailer():
         self.add(0x3B)
 
     # mark: LZW =================================================================================
 
     ## Encode `indices` with literal codes into `codes`.
-    mutating func encode(width: usize, height: usize, indices: const u8[], interlaced: bool, minimum: usize, clears: bool):
+    func encode(width: usize, height: usize, indices: const u8[], interlaced: bool, minimum: usize, clears: bool):
         self.coded = 0
         self.bits = 0
         self.held = 0
@@ -144,7 +144,7 @@ struct Builder:
             self.coded += 1
 
     ## Write `code`, `size` bits wide.
-    mutating func put(code: usize, size: usize):
+    func put(code: usize, size: usize):
         self.bits |= (u64)code << (u64)self.held
         self.held += size
         while self.held >= 8:

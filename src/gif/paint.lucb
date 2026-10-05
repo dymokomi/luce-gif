@@ -38,7 +38,7 @@ struct Painter:
 
     ## A painter of `frame` onto `canvas`, `width` by `height` pixels, with the palette
     ## the frame uses in `data`.
-    static func over(data: const u8[], frame: const Frame*, canvas: u8[], width: usize, height: usize) -> Painter:
+    func over(data: const u8[], frame: const Frame*, canvas: u8[], width: usize, height: usize) -> Painter:
         var painter = Painter(canvas = canvas, canvas_width = width, canvas_height = height, frame = *frame)
         painter.colors = data[frame.palette..<frame.palette + frame.colors * 3]
         if let index = frame.transparent:
@@ -47,7 +47,7 @@ struct Painter:
         return painter
 
     ## Draw `run`, the next indices in file order.
-    mutating func emit(run: const u8[]):
+    func emit(run: const u8[]):
         var index: usize = 0
         while index < run.length and not self.done:
             let take = least(run.length - index, self.frame.width - self.x)
@@ -63,7 +63,7 @@ struct Painter:
                 self.advance()
 
     ## Write `indices` as RGBA from byte `at` of the canvas on.
-    mutating func put(indices: const u8[], at: usize):
+    func put(indices: const u8[], at: usize):
         var offset = at
         let count = self.colors.length // 3
         for value in indices:
@@ -81,7 +81,7 @@ struct Painter:
             offset += 4
 
     ## Move to the next row in file order; past the last, the frame is done.
-    mutating func advance():
+    func advance():
         if not self.frame.interlaced:
             self.row += 1
             self.done = self.row >= self.frame.height

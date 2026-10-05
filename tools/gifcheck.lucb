@@ -19,6 +19,7 @@ import io
 import memory
 import gif
 import disk
+import strings
 
 extern func fflush(file: void*?) -> i32
 
@@ -65,28 +66,28 @@ func run_job(number: usize, job: disk.Job, directory: str) -> !:
         if not quiet:
             try frames.add_all(canvas)
     let out = io.stdout()
-    discard(try out.write(f"{number} ok {found.width} {found.height} {found.frame_count} "))
+    _ = try out.write(f"{number} ok {found.width} {found.height} {found.frame_count} ")
     if let count = found.loop_count:
-        discard(try out.write(f"{count} "))
+        _ = try out.write(f"{count} ")
     else:
-        discard(try out.write("- "))
+        _ = try out.write("- ")
     for (index, frame) in animation.frames().indexed():
-        discard(try out.write(f"{"," if index > 0 else ""}{frame.delay}"))
-    discard(try out.write(" "))
+        _ = try out.write(f"{"," if index > 0 else ""}{frame.delay}")
+    _ = try out.write(" ")
     for (index, frame) in animation.frames().indexed():
-        discard(try out.write(f"{"," if index > 0 else ""}{frame.duration}"))
-    discard(try out.write(" "))
+        _ = try out.write(f"{"," if index > 0 else ""}{frame.duration}")
+    _ = try out.write(" ")
     for frame in animation.frames():
         let letter = match frame.disposal:
             .keep => "k"
             .background => "b"
             .previous => "p"
-        discard(try out.write(letter))
-    discard(try out.write("\n"))
+        _ = try out.write(letter)
+    _ = try out.write("\n")
     if quiet:
         return
     var digits: u8[32]
-    let name = try format(digits, f"/{number}.rgba")
+    let name = try strings.format(digits, f"/{number}.rgba")
     var target = disk.Buffer()
     defer target.release()
     try target.add_all(directory.bytes)
@@ -104,6 +105,6 @@ pub func main(arguments: str[]) -> i32!:
     while let job = jobs.next():
         run_job(number, job, arguments[2]) catch failure:
             print(f"{number} error {code_name(failure.code)} {failure.message}")
-        discard(fflush(none))
+        _ = fflush(none)
         number += 1
     return 0

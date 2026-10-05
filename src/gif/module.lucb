@@ -125,7 +125,7 @@ pub struct Options:
 pub func info(data: const u8[]) -> Info!:
     var walker = try Walker.start(data)
     while let frame = walker.next():
-        discard(frame)
+        _ = frame
     return walker.info
 
 ## Decode the first frame into `out`, `width * height * 4` bytes of straight RGBA; what
@@ -134,7 +134,7 @@ pub func decode_rgba8(data: const u8[], out: u8[], options: Options = Options())
     var walker = try Walker.start(data)
     let first = walker.next() else error(corrupt, "GIF has no image")
     while let frame = walker.next():
-        discard(frame)
+        _ = frame
     let width = walker.info.width
     let height = walker.info.height
     try check_canvas(width, height, options)

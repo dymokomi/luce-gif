@@ -9,7 +9,7 @@ decode GIFs through it.
 from luce_gif import gif
 
 let found = try gif.info(data)                 # canvas size, frame count, loop count
-let pixels = try alloc u8[found.width * found.height * 4]
+let pixels = try new u8[found.width * found.height * 4] ---
 try gif.decode_rgba8(data, pixels)             # the first frame, straight RGBA
 
 var animation = try gif.Animation.open(data)   # `data` must outlive it

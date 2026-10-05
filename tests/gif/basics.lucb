@@ -117,18 +117,18 @@ test "not a GIF fails as corrupt":
         failed = failure.code == corrupt
     assert(failed)
     failed = false
-    discard(info(b"GIF89a\x01\x00") catch failure:
+    _ = info(b"GIF89a\x01\x00") catch failure:
         failed = failure.code == corrupt
-        recover Info())
+        recover Info()
     assert(failed)
 
 test "a global palette cut short fails":
     var builder = Builder()
     builder.header(1, 1, four_colors)
     var failed = false
-    discard(info(builder.data()[..<20]) catch failure:
+    _ = info(builder.data()[..<20]) catch failure:
         failed = failure.code == corrupt
-        recover Info())
+        recover Info()
     assert(failed)
 
 test "a GIF with no image has no frame to decode":
