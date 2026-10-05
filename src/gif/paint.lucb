@@ -38,7 +38,7 @@ struct Painter:
 
     ## A painter of `frame` onto `canvas`, `width` by `height` pixels, with the palette
     ## the frame uses in `data`.
-    func over(data: const u8[], frame: const Frame*, canvas: u8[], width: usize, height: usize) -> Painter:
+    static func over(data: const u8[], frame: const Frame*, canvas: u8[], width: usize, height: usize) -> Painter:
         var painter = Painter(canvas = canvas, canvas_width = width, canvas_height = height, frame = *frame)
         painter.colors = data[frame.palette..<frame.palette + frame.colors * 3]
         if let index = frame.transparent:

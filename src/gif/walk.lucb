@@ -54,7 +54,7 @@ struct Walker:
 
     ## A walker over `data`, its header and logical screen read. Fails when `data` is
     ## not a GIF, or ends inside its header or global palette.
-    func start(data: const u8[]) -> Walker!:
+    static func start(data: const u8[]) -> Walker!:
         if not holds(data, 0, "GIF87a") and not holds(data, 0, "GIF89a"):
             error(corrupt, "not a GIF: no GIF87a or GIF89a signature")
         if data.length < 13:

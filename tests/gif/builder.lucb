@@ -42,7 +42,7 @@ struct Builder:
         self.add((u8)(value >> 8))
 
     ## The size field of a palette of `palette.length / 3` colours, a power of two.
-    func palette_bits(palette: const u8[]) -> u8:
+    static func palette_bits(palette: const u8[]) -> u8:
         var bits: u8 = 0
         while ((usize)2 << (usize)bits) < palette.length // 3:
             bits += 1

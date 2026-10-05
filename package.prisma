@@ -1,7 +1,7 @@
 #prisma 4.0
 def package "luce-gif" {
     str owner = "dymokomi"
-    str version = "0.2.0"
+    str version = "0.3.0"
     str kind = "package"
     str language = "luce-base"
     str description = "A GIF decoder for Luce/Base: GIF87a and GIF89a, still and animated, frames composited as browsers show them."

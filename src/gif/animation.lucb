@@ -33,7 +33,7 @@ pub struct Animation:
 
     ## An animation of the GIF in `data`: its blocks walked and its canvas allocated.
     ## Fails when the GIF has no frame or its canvas is over `options.max_pixels`.
-    pub func open(data: const u8[], options: Options = Options()) -> Animation!:
+    pub static func open(data: const u8[], options: Options = Options()) -> Animation!:
         var walker = try Walker.start(data)
         var count: usize = 0
         while let frame = walker.next():
